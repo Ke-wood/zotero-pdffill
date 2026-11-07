@@ -1,0 +1,16 @@
+# 工作产物，不入库
+work/
+fetched/
+logs/
+backups/
+*.log
+*.jsonl
+*.sqlite
+*.pyc
+__pycache__/
+.venv/
+venv/
+
+# 绝不提交：可能含 Zotero 路径、cookie、个人数据
+.secrets/
+*credentials*
