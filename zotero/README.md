@@ -1,6 +1,6 @@
 # zotero-pdffill — Zotero 缺 PDF 批量补齐工具包
 
-> English: [README.md](README.md)
+> English: [../README.md](../README.md)
 
 给 Zotero 库里缺 PDF 的条目批量补全文并挂回附件。**随取随用，不用安装。**
 核心事实：**抓 PDF 和入库是两件事**——抓取不需要 Zotero，入库必须 Zotero 完全退出。
@@ -34,9 +34,9 @@ Linux/macOS 直接调脚本：
 
 ```bash
 export PDFFILL_ROOT="$PWD"
-python scripts/pdffill.py scan
-python scripts/pdffill_fast.py --workers 14
-python scripts/pdffill.py attach --backup
+python pdffill.py scan
+python pdffill_fast.py --workers 14
+python pdffill.py attach --backup
 ```
 
 ---

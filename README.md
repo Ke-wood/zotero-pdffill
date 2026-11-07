@@ -1,183 +1,189 @@
-# zotero-pdffill
+# doipdf
 
-**Batch-fill missing PDFs in your Zotero library and attach them back automatically.**
+**DOI in, PDF out.** Resolve a DOI to an actual PDF file from open sources — no database, no
+reference manager, no library, no Mendeley/Zotero coupling.
 
-Point it at a Zotero library, and it will find every item without a PDF, try multiple open-access
-sources concurrently, verify each download is a real PDF, and write the attachments straight into
-Zotero's database.
+```python
+from doipdf import fetch_pdf
 
-Built and battle-tested while filling ~500 missing papers in a real research library:
-**426 missing → 240**, at ~3 papers/second once the pipeline was made concurrent.
+result = fetch_pdf("10.1038/nature12373", outdir="pdfs")
+if result.ok:
+    print(result.path, result.source, result.size)
+```
+
+```bash
+python doipdf.py 10.1038/nature12373
+python doipdf.py -o pdfs --workers 12 --list dois.txt
+```
 
 ---
 
-## How it works
+## Two modes, because batches and one-offs are different problems
 
-Two separate concerns, and it matters that they stay separate:
+| | Single DOI | Batch (2+ DOIs) |
+|---|---|---|
+| Default mode | **full** — try every mirror | **quick** — best mirror only |
+| Typical time | 1–5 min | ~6s per DOI, parallel |
+| Use when | you need *this* paper | you need *most* of these papers |
 
-| Step | Needs Zotero closed? |
-|---|---|
-| Fetching PDFs | **No** — pure HTTP, writes to local `fetched/` |
-| Attaching to Zotero | **Yes** — writes directly to `zotero.sqlite` |
+The reasoning: a slow mirror can take 60–90 seconds to answer. That's acceptable when you're
+waiting for one paper, and ruinous when it's multiplied across 400.
 
-The official `zotero-write-endpoint` plugin (port 23119) **cannot import local files** — it only
-offers `add-by-identifier`, `create-items`, `item-update`, `delete-items`, `search`, `version`.
-So attaching a PDF means writing to the database directly.
+### Handling the leftovers
 
----
+A quick batch tells you exactly what it couldn't find, then stops:
 
-## Quick start
+```
+0/3 fetched in 18.9s (0.16/s, quick mode)
 
-```bash
-cd zotero-pdffill
-./pdffill.bat scan                  # list items missing PDFs
-./pdffill.bat fast --workers 14     # concurrent fetch (~3 papers/sec)
-# quit Zotero from the File menu, not Task Manager
-./pdffill.bat attach --backup       # write attachments + verify integrity
-./pdffill.bat report                # coverage stats
+3 not found. Quick mode only checks the best mirror,
+so some of these may exist elsewhere. To try every mirror:
+  re-run with --retry-slow
 ```
 
-On Windows, `pdffill.bat` is the entry point. On Linux/macOS, call the scripts directly:
+Then decide: is it worth several minutes per paper to chase these?
 
 ```bash
-export PDFFILL_ROOT="$PWD"
-python scripts/pdffill.py scan
-python scripts/pdffill_fast.py --workers 14
-python scripts/pdffill.py attach --backup
+# second pass on just the failures, every mirror, serial
+python doipdf.py --retry-slow -o pdfs --list dois.txt
+
+# or force a mode explicitly
+python doipdf.py --full 10.1234/abc        # one DOI, be thorough
+python doipdf.py --quick 10.1234/abc       # one DOI, just the fast check
 ```
 
-Scope it to one collection:
-
-```bash
-./pdffill.bat scan --collection "Ecology Homework"
-```
+Slow retry is **serial by default** — several 90-second mirrors at once makes a run look hung.
 
 ---
 
 ## Sources, tried in order
 
-1. **Unpaywall** — cleanest option, official OA copies
-2. **arXiv** — direct when the DOI contains `arxiv`
-3. **EuropePMC** — biomedical PMC copies
-4. **Sci-Hub mirrors** — the workhorse, ~65% hit rate in our runs
+| Source | Coverage |
+|---|---|
+| **Unpaywall** | Official open-access copies. Cleanest, when present |
+| **arXiv** | Direct when the DOI contains `arxiv` |
+| **EuropePMC** | Biomedical, PMC mirrors |
+| **Sci-Hub mirrors** | Last resort, widest coverage for paywalled papers |
 
-### Sci-Hub mirror status (Nov 2026)
+Override mirrors with `DOIPDF_MIRRORS` (comma-separated), set a contact address with
+`DOIPDF_MAIL` (Unpaywall requires one).
+
+### Mirror status (Nov 2026)
 
 | Mirror | Status |
 |---|---|
-| `sci-hub.box` | ✅ Best coverage — script tries this first |
-| `sci-hub.ru` | ✅ Works |
-| `www.sci-hub.ren` | ✅ Works |
-| `sci-hub.wf` | ⚠️ Often serves "Checking your browser" |
-| `scihub.help` | ⚠️ Mostly 404 |
+| `sci-hub.box` | ⚠️ Intermittent — 403s and anti-bot pages come and go |
+| `www.sci-hub.ren` | ⚠️ Works but takes 60–90s per article |
+| `sci-hub.ru` | ⚠️ Often serves a verification page |
+| `sci-hub.wf` | ⚠️ Often "Checking your browser" |
 | `sci-hub.se` | ❌ Unreachable |
 | `sci-hub.st` | ❌ 403 DDoS-Guard |
 
-If the page says the article is unavailable, **it genuinely isn't indexed** — cycling mirrors
-won't help. That's typical for 2024+ papers, small journals, and book chapters.
+Mirror health changes weekly. If everything fails, check them by hand before assuming the tool
+is broken — and see `references/troubleshooting.md`.
 
 ---
 
-## Publisher direct-link cheatsheet
+## Verification, not just HTTP 200
 
-| Publisher | Direct link | Notes |
+A 200 response proves nothing: paywalls, challenge pages, and login walls all return 200.
+
+```python
+# what counts as success
+content[:5] == b"%PDF-"          # real PDF magic
+len(content) >= 20000            # not a stub
+pdftotext -l 3 → ≥200 chars      # not a cover-only scan
+```
+
+Typical impostors we've hit:
+
+| Size | What it is | Cause |
 |---|---|---|
-| Springer/BMC | `link.springer.com/content/pdf/<DOI>.pdf` | **Do not use a proxy** — returns a 3 KB block page |
-| MDPI | `mdpi-res.com/d_attachment/<journal>/<journal>-<vol:02d>-<art:05d>/article_deploy/<same>.pdf` | The `www` site is Akamai-blocked; the CDN is not |
-| Wiley | `onlinelibrary.wiley.com/doi/pdfdirect/<DOI>` | Recent issues work; pre-2010 mostly 403 |
-| ACS | `pubs.acs.org/doi/pdf/<DOI>` | Requires institutional login |
-| PNAS | `www.pnas.org/doi/pdf/<DOI>` | |
-| Nature | `www.nature.com/articles/<DOI minus 10.1038/>.pdf` | |
-| Elsevier | No direct link | Must scrape the md5-tokenised `pdfft` URL from the article page |
+| ~3 KB | block page | proxy in use |
+| ~50–100 KB | challenge page | Cloudflare |
+| ~800 KB | error page | no subscription |
+| ~200 KB HTML | login wall | book chapter |
 
-### Free official channels
-
-Government and intergovernmental bodies publish PDFs openly. **OECD, WHO, FAO, UNEP, EPA, EFSA,
-ECHA** and learned societies all serve documents from a CDN that is **not** behind Cloudflare:
-
-```
-oecd.org/content/dam/oecd/en/publications/reports/<year>/<month>/<full-slug>_<hash>/<doi-suffix>.pdf
-```
-
-The path can't be constructed (year, month, slug, and hash are all needed), so open the landing
-page in a browser once, grab the "Download PDF" href, then let the script fetch it. We got 5/5
-this way on OECD guidance documents.
-
-**Commercial book chapters (Elsevier/Springer/CRC) have no such route** — their official site
-*is* the paywall.
+`pdftotext` is optional — without it the tool still checks the magic bytes, just less strictly.
 
 ---
 
-## What attach actually writes
+## Repository layout
 
 ```
-items          (itemTypeID=3, 8-char uppercase key, libraryID=1, version=0, synced=0)
-itemAttachments(parentItemID, linkMode=0, contentType='application/pdf',
-                path='storage:<filename>', syncState=0,
-                storageModTime / storageHash may be NULL,
-                lastProcessedModificationTime = file mtime)
-itemData       (fieldID=1 = title; the value goes into itemDataValues, not a `values` table)
-storage/<new-key>/<filename>
+doipdf/
+├── scripts/doipdf.py        ← the tool. Standalone, no dependencies beyond httpx.
+├── zotero/                  ← optional: plug results into a Zotero library
+│   ├── pdffill.py           ← scan a library, batch fill, attach back
+│   ├── pdffill_fast.py      ← concurrent variant
+│   ├── pdffill.bat          ← Windows entry
+│   ├── README.md            ← 中文文档
+│   └── references/          ← troubleshooting + field data
+└── README.md                ← you are here
 ```
 
-`attach` checks Zotero is closed, backs up the whole library, runs `PRAGMA wal_checkpoint(TRUNCATE)`,
-writes each item in a transaction, then runs `integrity_check` + `foreign_key_check`.
+`doipdf` has no awareness of Zotero. The `zotero/` directory is a separate tool that reuses the
+same fetching logic but adds library scanning and direct-DB attachment. Ignore it unless you
+keep a Zotero library.
+
+```bash
+# pure DOI → PDF, no database involved
+python scripts/doipdf.py 10.1038/nature12373 -o pdfs/
+
+# optional: fill and attach inside a Zotero library
+cd zotero && ./pdffill.bat scan && ./pdffill.bat fast && ./pdffill.bat attach
+```
 
 ---
 
-## Gotchas (every one of these bit us)
+## What it deliberately does not do
 
-1. **Force-killing Zotero rolls back the library.** We lost an entire night's imports (142 items)
-   this way — the DB went from 178 MB to a 23 MB rebuild on next start. **Quit from File → Quit.**
-   `attach` refuses to run if it detects Zotero still listening.
+- No database. Nothing to configure, nothing to migrate.
+- No reference manager integration. It writes files; you decide where they go.
+- No browser automation. Everything is plain HTTP.
+- No credential handling.
 
-2. **Stale WAL blocks writes.** Even after a clean exit, `zotero.sqlite-wal` may linger and make
-   the script think Zotero is still up. Always checkpoint first.
-
-3. **The 20-second tool timeout.** PDF endpoints routinely take 15–25 s. Workaround: run the
-   `fetch` inside a hidden iframe and return immediately, then collect the downloaded files.
-
-4. **`dsh_browser_download` is a page-context fetch.** Cross-origin redirects
-   (Elsevier → `pdf.sciencedirectassets.com`) fail. Navigate to the PDF URL first, *then*
-   `fetch(location.href)`.
-
-5. **Cloudflare fingerprints the browser.** Plain `httpx` gets 403 everywhere; institutional IP
-   access only works inside a real browser, and each publisher domain needs its own challenge
-   solved by a human.
-
-6. **Proxies can hurt.** Springer and MDPI returned 3 KB block pages *with* a proxy and worked
-   fine without one. The scripts use `trust_env=False` and no proxy.
-
-7. **Direct DB writes don't build the full-text index.** PDFs open fine, but Zotero's full-text
-   search won't find their contents until you rebuild the index.
+If a source needs a browser (Cloudflare-protected publishers like Elsevier, ACS, Wiley), this
+tool will not get it — those require a human solving a challenge in a real browser. For that
+workflow, see the sibling project `zotero-pdffill`.
 
 ---
 
-## Documentation
+## Install
 
-| File | Contents |
-|---|---|
-| [`references/troubleshooting.md`](references/troubleshooting.md) | Symptom-indexed: 403s, challenge pages, WAL, broken attachments, timeouts |
-| [`references/field-data.md`](references/field-data.md) | Hit rates by source, results by publisher, speed benchmarks |
-| [`README.zh.md`](README.zh.md) | 中文完整说明 |
+```bash
+pip install httpx
+# optional but recommended, for stricter verification:
+#   apt install poppler-utils      /  brew install poppler
+```
 
----
+Python 3.10+. Single file, no other dependencies.
 
-## Requirements
+## As a library
 
-- Python 3.10+ with `httpx`
-- `pdftotext` (Poppler) for PDF verification — optional but strongly recommended
-- Zotero (developed against 10.0.7)
+```python
+from doipdf import fetch_pdf, fetch_many, slow_retry
 
-Zotero's database is auto-detected: `ZOTERO_DB_PATH` → `extensions.zotero.dataDir` in
-`prefs.js` → `~/Zotero/zotero.sqlite`.
+# one
+r = fetch_pdf("10.1038/nature12373", outdir="pdfs")
 
-## Disclaimer
+# many, quick mode
+results = fetch_many(dois, outdir="pdfs", workers=12, quick=True)
+missing = [r.doi for r in results if not r.ok]
 
-This tool can retrieve papers from sources whose legality varies by jurisdiction, and it writes
-directly to Zotero's database. **Back up your library and use it only for content you are
-entitled to access.** The authors take no responsibility for misuse.
+# chase the missing ones, serially
+if missing:
+    for r in slow_retry(missing, outdir="pdfs"):
+        print(r.doi, r.ok, r.source)
+```
+
+`Result` has: `doi`, `ok`, `source`, `path`, `size`, `error`.
 
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+## Disclaimer
+
+Some sources here operate in a legal grey area that varies by jurisdiction. Use this only for
+content you are entitled to access.

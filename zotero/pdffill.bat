@@ -26,7 +26,7 @@ goto collect
 :haveargs
 
 if /i "%CMD%"=="fast" (
-  python "%HERE%\scripts\pdffill_fast.py"!REST!
+  python "%HERE%\pdffill_fast.py"!REST!
   goto end
 )
 if /i "%CMD%"=="scan"   goto domean
@@ -37,7 +37,7 @@ if /i "%CMD%"=="run"    goto domean
 goto usage
 
 :domean
-python "%HERE%\scripts\pdffill.py" %CMD%!REST!
+python "%HERE%\pdffill.py" %CMD%!REST!
 goto end
 
 :usage
